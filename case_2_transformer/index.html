@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TopoLayout-DG HEB</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #101216;
+            color: #eef2f7;
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+
+        #stage {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+            background: #101216;
+        }
+
+        #panel {
+            position: fixed;
+            top: 16px;
+            left: 16px;
+            width: min(360px, calc(100vw - 32px));
+            padding: 14px;
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            border-radius: 8px;
+            background: rgba(18, 21, 27, 0.9);
+            box-shadow: 0 18px 46px rgba(0, 0, 0, 0.38);
+            backdrop-filter: blur(14px);
+        }
+
+        #title {
+            margin-bottom: 10px;
+            font-size: 13px;
+            font-weight: 700;
+            color: #ffffff;
+        }
+
+        .row {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 12px;
+            padding: 6px 0;
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+            font-size: 12px;
+            line-height: 1.25;
+        }
+
+        .label {
+            color: #aeb7c3;
+        }
+
+        .value {
+            color: #f8fafc;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .slider-row {
+            display: grid;
+            grid-template-columns: 1fr 72px;
+            gap: 12px;
+            align-items: center;
+            padding-top: 10px;
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        input[type="range"] {
+            width: 100%;
+            accent-color: #22c55e;
+        }
+
+        #loading {
+            position: fixed;
+            inset: 0;
+            display: grid;
+            place-items: center;
+            background: #101216;
+            color: #dbe3ee;
+            font-size: 13px;
+            z-index: 10;
+        }
+
+        #loading[hidden] {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="stage"></canvas>
+    <div id="loading">Loading graph_data.json</div>
+    <aside id="panel">
+        <div id="title">TopoLayout-DG</div>
+        <div class="row"><span class="label">Active Cell</span><span class="value" id="active-cell">root_graph</span></div>
+        <div class="row"><span class="label">Vertices</span><span class="value" id="vertices">0</span></div>
+        <div class="row"><span class="label">Edges Rendered</span><span class="value" id="edges-rendered">0</span></div>
+        <div class="row"><span class="label">MetaNodes</span><span class="value" id="meta-nodes">0</span></div>
+        <div class="row"><span class="label">FPS</span><span class="value" id="fps">0</span></div>
+        <div class="slider-row">
+            <input id="beta" type="range" min="0" max="1" step="0.01" value="0.85">
+            <span class="value" id="beta-value">beta 0.85</span>
+        </div>
+    </aside>
+
+    <script src="https://cdn.jsdelivr.net/npm/pixi.js@7.4.2/dist/pixi.min.js"></script>
+    <script>
+        let beta = 0.85;
+
+        const app = new PIXI.Application({
+            view: document.getElementById("stage"),
+            resizeTo: window,
+            backgroundColor: 0x101216,
+            antialias: true,
+            autoDensity: true,
+            resolution: window.devicePixelRatio || 1,
+        });
+
+        const world = new PIXI.Container();
+        const edgeLayer = new PIXI.Container();
+        const boxLayer = new PIXI.Container();
+        const nodeLayer = new PIXI.Container();
+        world.addChild(edgeLayer, boxLayer, nodeLayer);
+        app.stage.addChild(world);
+        app.stage.interactive = true;
+        app.stage.hitArea = app.screen;
+
+        const formatNumber = new Intl.NumberFormat();
+        const loading = document.getElementById("loading");
+        const nodeById = new Map();
+        const parentById = new Map();
+        const depthById = new Map();
+        const ancestorsByLeaf = new Map();
+        const rootChildByLeaf = new Map();
+        const metaNodes = [];
+        const meshCache = new Map();
+        const typeColors = {
+            ISOLATED: "#9ca3af",
+            CYCLE: "#f59e0b",
+            COMPLETE: "#ef4444",
+            SCC: "#22c55e",
+            TREE: "#14b8a6",
+            DAG: "#3b82f6",
+            BISECTION: "#a855f7",
+            TensorInput: "#e879f9",
+            TensorOutput: "#22d3ee",
+        };
+
+        let graphData = null;
+        let tree = null;
+        let activeMeta = null;
+        let activeMode = "global";
+        let camera = { scale: 1, x: 0, y: 0 };
+        let animation = null;
+        let frameCount = 0;
+        let lastFpsTime = performance.now();
+
+        const curveShader = PIXI.Shader.from(
+            `
+            precision mediump float;
+            attribute vec2 aVertexPosition;
+            attribute vec4 aColor;
+            uniform mat3 translationMatrix;
+            uniform mat3 projectionMatrix;
+            varying vec4 vColor;
+            void main() {
+                vec3 position = projectionMatrix * translationMatrix * vec3(aVertexPosition, 1.0);
+                gl_Position = vec4(position.xy, 0.0, 1.0);
+                vColor = aColor;
+            }
+            `,
+            `
+            precision mediump float;
+            varying vec4 vColor;
+            void main() {
+                gl_FragColor = vColor;
+            }
+            `
+        );
+
+        function colorToHex(color) {
+            return Number.parseInt(color.replace("#", ""), 16);
+        }
+
+        function pointOf(node) {
+            return { x: Number(node.cx ?? node.x), y: Number(node.cy ?? node.y) };
+        }
+
+        function centerOf(node) {
+            return { x: node.x + node.width / 2, y: node.y + node.height / 2 };
+        }
+
+        function isMeta(node) {
+            return node && node.kind === "meta";
+        }
+
+        function isLeaf(node) {
+            return node && node.kind === "leaf";
+        }
+
+        function childrenMetas(node) {
+            return (node.children || []).filter(isMeta);
+        }
+
+        function childrenLeaves(node) {
+            return (node.children || []).filter(isLeaf);
+        }
+
+        function clearLayer(layer, destroyChildren = true) {
+            while (layer.children.length) {
+                const child = layer.removeChildAt(0);
+                if (destroyChildren) {
+                    child.destroy({ children: true, texture: false, baseTexture: false });
+                }
+            }
+        }
+
+        function indexTree(node, parent, depth, rootChildId, path) {
+            nodeById.set(node.id, node);
+            depthById.set(node.id, depth);
+            if (parent) {
+                parentById.set(node.id, parent.id);
+            }
+            const nextRootChildId = depth === 1 ? node.id : rootChildId;
+            const nextPath = [node.id, ...path];
+            if (isMeta(node)) {
+                metaNodes.push(node);
+            }
+            if (isLeaf(node)) {
+                ancestorsByLeaf.set(node.id, nextPath);
+                rootChildByLeaf.set(node.id, nextRootChildId);
+            }
+            for (const child of node.children || []) {
+                indexTree(child, node, depth + 1, nextRootChildId, nextPath);
+            }
+        }
+
+        function nodeAncestors(nodeId) {
+            const ancestors = [];
+            let current = nodeId;
+            while (current) {
+                ancestors.push(current);
+                current = parentById.get(current);
+            }
+            return ancestors;
+        }
+
+        function lcaPath(sourceId, targetId) {
+            const sourceAncestors = nodeAncestors(sourceId);
+            const targetAncestors = nodeAncestors(targetId);
+            const sourceSet = new Set(sourceAncestors);
+            let lca = tree.id;
+            let targetLcaIndex = targetAncestors.length - 1;
+            for (let index = 0; index < targetAncestors.length; index += 1) {
+                if (sourceSet.has(targetAncestors[index])) {
+                    lca = targetAncestors[index];
+                    targetLcaIndex = index;
+                    break;
+                }
+            }
+            const sourceLcaIndex = sourceAncestors.indexOf(lca);
+            const up = sourceAncestors.slice(0, sourceLcaIndex + 1);
+            const down = targetAncestors.slice(0, targetLcaIndex).reverse();
+            return up.concat(down).map((id) => nodeById.get(id)).filter(Boolean);
+        }
+
+        function bundledControls(sourceId, targetId, curveBeta) {
+            const pathNodes = lcaPath(sourceId, targetId);
+            if (pathNodes.length < 2) {
+                return [];
+            }
+            const points = pathNodes.map(pointOf);
+            const start = points[0];
+            const end = points[points.length - 1];
+            return points.map((point, index) => {
+                const t = points.length === 1 ? 0 : index / (points.length - 1);
+                const straight = {
+                    x: start.x + (end.x - start.x) * t,
+                    y: start.y + (end.y - start.y) * t,
+                };
+                return {
+                    x: straight.x * (1 - curveBeta) + point.x * curveBeta,
+                    y: straight.y * (1 - curveBeta) + point.y * curveBeta,
+                };
+            });
+        }
+
+        function cubicBSplinePoint(p0, p1, p2, p3, t) {
+            const t2 = t * t;
+            const t3 = t2 * t;
+            const b0 = (-t3 + 3 * t2 - 3 * t + 1) / 6;
+            const b1 = (3 * t3 - 6 * t2 + 4) / 6;
+            const b2 = (-3 * t3 + 3 * t2 + 3 * t + 1) / 6;
+            const b3 = t3 / 6;
+            return {
+                x: p0.x * b0 + p1.x * b1 + p2.x * b2 + p3.x * b3,
+                y: p0.y * b0 + p1.y * b1 + p2.y * b2 + p3.y * b3,
+            };
+        }
+
+        function sampleBSpline(points, subdivisions) {
+            if (points.length <= 2) {
+                return points;
+            }
+            const padded = [points[0], points[0], ...points, points[points.length - 1], points[points.length - 1]];
+            const samples = [];
+            for (let index = 0; index <= padded.length - 4; index += 1) {
+                for (let step = 0; step < subdivisions; step += 1) {
+                    samples.push(cubicBSplinePoint(
+                        padded[index],
+                        padded[index + 1],
+                        padded[index + 2],
+                        padded[index + 3],
+                        step / subdivisions
+                    ));
+                }
+            }
+            samples.push(points[points.length - 1]);
+            return samples;
+        }
+
+        function edgeIsGlobal(index) {
+            const source = graphData.edges.source[index];
+            const target = graphData.edges.target[index];
+            const sourceRoot = rootChildByLeaf.get(source);
+            const targetRoot = rootChildByLeaf.get(target);
+            return sourceRoot && targetRoot && sourceRoot !== targetRoot;
+        }
+
+        function leafDescendsFrom(leafId, metaId) {
+            const ancestors = ancestorsByLeaf.get(leafId);
+            return Boolean(ancestors && ancestors.includes(metaId));
+        }
+
+        function edgeIsInsideMeta(index, metaId) {
+            return leafDescendsFrom(graphData.edges.source[index], metaId) && leafDescendsFrom(graphData.edges.target[index], metaId);
+        }
+
+        function collectEdgeIndices(mode, meta) {
+            const total = graphData.edges.source.length;
+            const indices = [];
+            for (let index = 0; index < total; index += 1) {
+                if (mode === "global") {
+                    if (edgeIsGlobal(index)) {
+                        indices.push(index);
+                    }
+                } else if (edgeIsInsideMeta(index, meta.id)) {
+                    indices.push(index);
+                }
+            }
+            return indices;
+        }
+
+        function makeCurveMesh(edgeIndices, curveBeta, subdivisions, alpha) {
+            const positions = [];
+            const colors = [];
+            let renderedEdges = 0;
+            for (const edgeIndex of edgeIndices) {
+                const sourceId = graphData.edges.source[edgeIndex];
+                const targetId = graphData.edges.target[edgeIndex];
+                if (!nodeById.has(sourceId) || !nodeById.has(targetId) || sourceId === targetId) {
+                    continue;
+                }
+                const controls = bundledControls(sourceId, targetId, curveBeta);
+                if (controls.length < 2) {
+                    continue;
+                }
+                const samples = sampleBSpline(controls, subdivisions);
+                if (samples.length < 2) {
+                    continue;
+                }
+                renderedEdges += 1;
+                for (let index = 0; index < samples.length - 1; index += 1) {
+                    const a = samples[index];
+                    const b = samples[index + 1];
+                    const t0 = index / (samples.length - 1);
+                    const t1 = (index + 1) / (samples.length - 1);
+                    positions.push(a.x, a.y, b.x, b.y);
+                    colors.push(1.0, 0.08 + 0.62 * t0, 0.05, alpha);
+                    colors.push(1.0 - 0.92 * t1, 0.18 + 0.74 * t1, 0.08, alpha);
+                }
+            }
+            if (!positions.length) {
+                return { mesh: null, renderedEdges: 0 };
+            }
+            const geometry = new PIXI.Geometry()
+                .addAttribute("aVertexPosition", new Float32Array(positions), 2)
+                .addAttribute("aColor", new Float32Array(colors), 4);
+            const mesh = new PIXI.Mesh(geometry, curveShader, undefined, PIXI.DRAW_MODES.LINES);
+            mesh.eventMode = "none";
+            return { mesh, renderedEdges };
+        }
+
+        function cachedCurveMesh(key, edgeIndices, curveBeta, subdivisions, alpha) {
+            const cacheKey = `${key}:${curveBeta.toFixed(2)}:${subdivisions}:${alpha}`;
+            if (meshCache.has(cacheKey)) {
+                return meshCache.get(cacheKey);
+            }
+            const result = makeCurveMesh(edgeIndices, curveBeta, subdivisions, alpha);
+            meshCache.set(cacheKey, result);
+            return result;
+        }
+
+        function makeText(value, x, y, size, color) {
+            const text = new PIXI.Text(value, {
+                fontFamily: "Inter, Arial, sans-serif",
+                fontSize: size,
+                fill: color,
+                resolution: window.devicePixelRatio || 1,
+            });
+            text.x = x;
+            text.y = y;
+            text.eventMode = "none";
+            return text;
+        }
+
+        function drawMetaFrame(meta, interactive) {
+            const color = colorToHex((graphData.meta_colors && graphData.meta_colors[meta.type]) || typeColors[meta.type] || "#64748b");
+            const frame = new PIXI.Graphics();
+            frame.lineStyle(Math.max(1 / Math.max(camera.scale, 0.001), 1.4), color, 0.92);
+            frame.beginFill(color, interactive ? 0.055 : 0.025);
+            frame.drawRect(meta.x, meta.y, meta.width, meta.height);
+            frame.endFill();
+            const center = centerOf(meta);
+            frame.beginFill(color, 0.95);
+            frame.drawCircle(center.x, center.y, Math.max(2.5 / Math.max(camera.scale, 0.001), Math.min(meta.width, meta.height) * 0.012));
+            frame.endFill();
+
+            if (interactive) {
+                frame.interactive = true;
+                frame.cursor = "pointer";
+                frame.on("pointertap", (event) => {
+                    event.stopPropagation();
+                    drillTo(meta);
+                });
+            }
+            boxLayer.addChild(frame);
+
+            if (meta.width > 90 && meta.height > 36) {
+                boxLayer.addChild(makeText(`${meta.type} ${formatNumber.format(meta.vertex_count)}`, meta.x + 8, meta.y + 7, 11, "#e8eef8"));
+            }
+        }
+
+        function drawLeafNodes(meta) {
+            const leaves = childrenLeaves(meta);
+            if (!leaves.length) {
+                return;
+            }
+            const graphics = new PIXI.Graphics();
+            const color = colorToHex((graphData.meta_colors && graphData.meta_colors[meta.type]) || typeColors[meta.type] || "#e2e8f0");
+            const radius = Math.max(1.4 / Math.max(camera.scale, 0.001), Math.min(4.2, Math.sqrt((meta.width * meta.height) / leaves.length) * 0.018));
+            graphics.beginFill(color, 0.96);
+            for (const leaf of leaves) {
+                graphics.drawCircle(leaf.x, leaf.y, radius);
+            }
+            graphics.endFill();
+            graphics.eventMode = "none";
+            nodeLayer.addChild(graphics);
+        }
+
+        function renderScene() {
+            loading.hidden = false;
+            loading.textContent = activeMode === "global" ? "Building global HEB bundles" : "Building local HEB bundles";
+            clearLayer(edgeLayer, false);
+            clearLayer(boxLayer);
+            clearLayer(nodeLayer);
+
+            requestAnimationFrame(() => {
+                const mode = activeMode;
+                const meta = activeMeta;
+                let edgeIndices;
+                let meshResult;
+
+                if (mode === "global") {
+                    edgeIndices = collectEdgeIndices("global", null);
+                    meshResult = cachedCurveMesh("global", edgeIndices, beta, 2, 0.18);
+                    if (meshResult.mesh) {
+                        edgeLayer.addChild(meshResult.mesh);
+                    }
+                    for (const child of tree.children || []) {
+                        drawMetaFrame(child, true);
+                    }
+                    document.getElementById("active-cell").textContent = "root_graph";
+                    document.getElementById("vertices").textContent = formatNumber.format(graphData.stats.vertices);
+                } else {
+                    drawMetaFrame(meta, false);
+                    const childMetas = childrenMetas(meta);
+                    edgeIndices = collectEdgeIndices("detail", meta);
+                    const detailBeta = childMetas.length ? Math.min(beta, 0.55) : 0.08;
+                    meshResult = cachedCurveMesh(`detail:${meta.id}`, edgeIndices, detailBeta, childMetas.length ? 3 : 1, childMetas.length ? 0.26 : 0.34);
+                    if (meshResult.mesh) {
+                        edgeLayer.addChild(meshResult.mesh);
+                    }
+                    if (childMetas.length) {
+                        for (const child of childMetas) {
+                            drawMetaFrame(child, true);
+                        }
+                    } else {
+                        drawLeafNodes(meta);
+                    }
+                    document.getElementById("active-cell").textContent = `${meta.id} ${meta.type}`;
+                    document.getElementById("vertices").textContent = formatNumber.format(meta.vertex_count);
+                }
+
+                document.getElementById("edges-rendered").textContent = formatNumber.format(meshResult.renderedEdges);
+                loading.hidden = true;
+            });
+        }
+
+        function applyCamera() {
+            world.scale.set(camera.scale);
+            world.position.set(camera.x, camera.y);
+        }
+
+        function animateToBox(box, onComplete) {
+            const padding = 76;
+            const targetScale = Math.min(
+                (app.screen.width - padding * 2) / Math.max(1, box.width),
+                (app.screen.height - padding * 2) / Math.max(1, box.height)
+            );
+            const clampedScale = Math.max(0.015, Math.min(22, targetScale));
+            animation = {
+                startTime: performance.now(),
+                duration: 720,
+                from: { scale: camera.scale, x: camera.x, y: camera.y },
+                to: {
+                    scale: clampedScale,
+                    x: app.screen.width / 2 - (box.x + box.width / 2) * clampedScale,
+                    y: app.screen.height / 2 - (box.y + box.height / 2) * clampedScale,
+                },
+                onComplete,
+            };
+        }
+
+        function easeInOutCubic(t) {
+            return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        }
+
+        function updateAnimation() {
+            if (!animation) {
+                return;
+            }
+            const progress = Math.min(1, (performance.now() - animation.startTime) / animation.duration);
+            const t = easeInOutCubic(progress);
+            camera.scale = animation.from.scale + (animation.to.scale - animation.from.scale) * t;
+            camera.x = animation.from.x + (animation.to.x - animation.from.x) * t;
+            camera.y = animation.from.y + (animation.to.y - animation.from.y) * t;
+            applyCamera();
+            if (progress >= 1) {
+                const callback = animation.onComplete;
+                animation = null;
+                if (callback) {
+                    callback();
+                }
+            }
+        }
+
+        function drillTo(meta) {
+            activeMeta = meta;
+            activeMode = "detail";
+            renderScene();
+            animateToBox(meta, null);
+        }
+
+        function resetToGlobal() {
+            activeMeta = null;
+            activeMode = "global";
+            renderScene();
+            animateToBox(tree, null);
+        }
+
+        app.stage.on("pointertap", () => {
+            if (activeMode !== "global") {
+                resetToGlobal();
+            }
+        });
+
+        window.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+                resetToGlobal();
+            }
+        });
+
+        window.addEventListener("resize", () => {
+            app.stage.hitArea = app.screen;
+            animateToBox(activeMeta || tree, null);
+        });
+
+        document.getElementById("beta").addEventListener("input", (event) => {
+            beta = Number(event.target.value);
+            document.getElementById("beta-value").textContent = `beta ${beta.toFixed(2)}`;
+            renderScene();
+        });
+
+        app.ticker.add(() => {
+            frameCount += 1;
+            const now = performance.now();
+            if (now - lastFpsTime > 1000) {
+                document.getElementById("fps").textContent = String(Math.round((frameCount * 1000) / (now - lastFpsTime)));
+                frameCount = 0;
+                lastFpsTime = now;
+            }
+            updateAnimation();
+        });
+
+        async function boot() {
+            const response = await fetch("graph_data.json", { cache: "no-store" });
+            if (!response.ok) {
+                throw new Error(`graph_data.json returned HTTP ${response.status}`);
+            }
+            graphData = await response.json();
+            tree = graphData.tree;
+            indexTree(tree, null, 0, null, []);
+            document.title = graphData.title || "TopoLayout-DG HEB";
+            document.getElementById("title").textContent = graphData.title || "TopoLayout-DG HEB";
+            document.getElementById("vertices").textContent = formatNumber.format(graphData.stats.vertices);
+            document.getElementById("meta-nodes").textContent = formatNumber.format(graphData.stats.meta_nodes);
+            camera.scale = Math.max(0.015, Math.min(app.screen.width / tree.width, app.screen.height / tree.height));
+            camera.x = app.screen.width / 2 - (tree.x + tree.width / 2) * camera.scale;
+            camera.y = app.screen.height / 2 - (tree.y + tree.height / 2) * camera.scale;
+            applyCamera();
+            renderScene();
+        }
+
+        boot().catch((error) => {
+            loading.hidden = false;
+            loading.textContent = error.message;
+            console.error(error);
+        });
+    </script>
+</body>
+</html>

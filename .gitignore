@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+.env
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Editors and OS files
+.vscode/
+.DS_Store
+
+# Local server/runtime artifacts
+.case_study_servers.pid
+server.log
+*.log
+
+# Legacy single-file prototype files kept locally, outside the publish layout.
+/index.html
+/parse.py
+/requirements.txt
+/topo_pipeline.py
+
+# Large source datasets
+cit-HepPh.txt
+*.ncol
+*.edgelist
+*.edges
+
+# Generated model/data artifacts
+graph_data.json
+case_*/graph_data.json
+case_*/graph_data_*.json
+case_2_transformer/transformer_layer.onnx
+*.onnx
+
+# Keep the lightweight sample payload used by the Case 1 demo page.
+!case_1_citation/graph_data.json
