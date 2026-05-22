@@ -614,9 +614,11 @@
         });
 
         async function boot() {
-            const response = await fetch("graph_data.json", { cache: "no-store" });
+            const params = new URLSearchParams(window.location.search);
+            const dataFile = params.get("data") || "graph_data.json";
+            const response = await fetch(dataFile, { cache: "no-store" });
             if (!response.ok) {
-                throw new Error(`graph_data.json returned HTTP ${response.status}`);
+                throw new Error(`${dataFile} returned HTTP ${response.status}`);
             }
             graphData = await response.json();
             tree = graphData.tree;

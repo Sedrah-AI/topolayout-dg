@@ -42,11 +42,16 @@ It keeps both servers alive until `Ctrl-C`.
 
 ## Sample Payload
 
-`case_1_citation/graph_data.json` is a committed lightweight sample with 100
-nodes and 500 directed edges. It lets the PixiJS HEB visualization open
-immediately after cloning. The full `cit-HepPh.txt` dataset, generated ONNX
-models, and large generated `graph_data.json` files are excluded by
-`.gitignore`.
+`case_1_citation/sample_graph_data.json` is a committed lightweight sample with
+100 nodes and 500 directed edges. It lets the PixiJS HEB visualization open
+without committing the full dataset output.
+
+```text
+http://127.0.0.1:8001/index.html?data=sample_graph_data.json
+```
+
+The full `cit-HepPh.txt` dataset, generated ONNX models, and large generated
+`graph_data.json` files are excluded by `.gitignore`.
 
 ## Structure
 
