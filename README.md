@@ -45,6 +45,13 @@ It keeps the local servers alive until `Ctrl-C`.
 If `cit-HepPh.txt` is not present, Case 1 serves the committed sample payload
 and still runs Cases 2 and 3.
 
+Case 3 also includes a fully self-contained Cytoscape/Tailwind LayMan GUI with
+an embedded image-classifier schema:
+
+```text
+http://127.0.0.1:8003/layman_cytoscape.html
+```
+
 ## Sample Payload
 
 `case_1_citation/sample_graph_data.json` is a committed lightweight sample with
@@ -76,5 +83,6 @@ topolayout-dg/
 +-- case_3_image_classifier/
     +-- pipeline.py
     +-- index.html
+    +-- layman_cytoscape.html
     +-- graph_data.json
 ```

@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LayMan PyTorch Pipeline Visualizer</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.29.2/dist/cytoscape.min.js"></script>
+  <style>
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #0f172a;
+    }
+
+    #cy {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .heat-cell {
+      transition: transform 120ms ease, box-shadow 120ms ease, outline-color 120ms ease;
+    }
+
+    .heat-cell:hover,
+    .heat-cell.selected {
+      transform: translateY(-1px) scale(1.03);
+      box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.65);
+    }
+
+    .telemetry-marquee {
+      white-space: nowrap;
+      animation: ticker 12s linear infinite;
+    }
+
+    @keyframes ticker {
+      0% { transform: translateX(100%); }
+      100% { transform: translateX(-100%); }
+    }
+  </style>
+</head>
+<body class="text-slate-100">
+  <div class="flex h-screen w-screen">
+    <main class="relative flex-1 overflow-hidden">
+      <div id="cy"></div>
+
+      <div class="absolute left-4 top-4 z-10 flex flex-wrap gap-2 rounded-lg border border-white/10 bg-slate-950/85 p-2 shadow-xl backdrop-blur">
+        <button id="zoomIn" class="rounded-md bg-sky-500 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-400">Zoom In</button>
+        <button id="zoomOut" class="rounded-md bg-sky-500 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-400">Zoom Out</button>
+        <button id="fit" class="rounded-md bg-slate-700 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-600">Fit to Screen</button>
+        <button id="resetPath" class="rounded-md bg-rose-600 px-3 py-2 text-sm font-semibold text-white hover:bg-rose-500">Clear Path</button>
+      </div>
+
+      <div class="absolute bottom-4 left-4 right-[28rem] z-10 overflow-hidden rounded-lg border border-emerald-400/30 bg-slate-950/85 px-4 py-3 shadow-xl backdrop-blur">
+        <div class="mb-1 text-xs font-semibold uppercase tracking-wide text-emerald-300">Path Interrogation Telemetry</div>
+        <div id="ticker" class="h-6 overflow-hidden text-sm text-slate-200">
+          <span class="text-slate-400">Select two neurons from different active primitive nodes to animate a data-flow path.</span>
+        </div>
+      </div>
+    </main>
+
+    <aside class="flex w-[27rem] flex-col border-l border-white/10 bg-slate-950">
+      <header class="border-b border-white/10 p-5">
+        <div class="text-xs font-bold uppercase tracking-[0.18em] text-sky-300">LayMan PyTorch Pipeline Visualizer</div>
+        <h1 class="mt-2 text-xl font-semibold text-white">ImageClassifier</h1>
+        <p class="mt-2 text-sm leading-6 text-slate-400">Compound module hierarchy, execution DAG, anomaly encodings, neuron telemetry, and path interrogation for a residual image classifier.</p>
+      </header>
+
+      <section class="border-b border-white/10 p-5">
+        <div class="grid grid-cols-2 gap-3 text-sm">
+          <div class="rounded-lg bg-slate-900 p-3">
+            <div class="text-xs uppercase text-slate-500">Expanded</div>
+            <div id="expandedCount" class="mt-1 text-lg font-semibold text-white">0</div>
+          </div>
+          <div class="rounded-lg bg-slate-900 p-3">
+            <div class="text-xs uppercase text-slate-500">Failure Edges</div>
+            <div id="failureCount" class="mt-1 text-lg font-semibold text-rose-300">0</div>
+          </div>
+        </div>
+        <div class="mt-4 rounded-lg border border-rose-400/30 bg-rose-950/40 p-3 text-sm text-rose-100">
+          <span class="font-semibold">Anomaly rule:</span> NaN telemetry, null variance, or variance magnitude above 100 is flagged bright red.
+        </div>
+      </section>
+
+      <section class="min-h-0 flex-1 overflow-y-auto p-5">
+        <div id="selectionPanel" class="text-sm text-slate-300">
+          <div class="rounded-lg border border-white/10 bg-slate-900 p-4">
+            <div class="font-semibold text-white">Interaction</div>
+            <ul class="mt-3 list-disc space-y-2 pl-5 leading-6 text-slate-400">
+              <li>Double-click a compound module to expand or collapse its onion layer.</li>
+              <li>Select a primitive node to inspect neuron telemetry.</li>
+              <li>Click two neuron cells from different active nodes to animate the data-flow path.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+    </aside>
+  </div>
+
+  <script>
+    const modelSchema = {
+      "model_name": "ImageClassifier",
+      "nodes": [
+        {"id": "root", "label": "ImageClassifier", "is_compound": true, "parent": null, "type": "container"},
+        {"id": "features", "label": "features (nn.Sequential)", "is_compound": true, "parent": "root", "type": "container"},
+        {"id": "features.0", "label": "features.0 (nn.Conv2d)", "is_compound": false, "parent": "features", "type": "primitive", "layer_index": 0, "variance": 0.05, "neurons": [0.12, 0.45, -0.23, 0.89]},
+        {"id": "features.1", "label": "features.1 (ResidualBlock)", "is_compound": true, "parent": "features", "type": "container"},
+        {"id": "features.1.conv1", "label": "conv1 (nn.Conv2d)", "is_compound": false, "parent": "features.1", "type": "primitive", "layer_index": 1, "variance": 0.02, "neurons": [0.33, -0.11, 0.56, 0.22]},
+        {"id": "features.1.relu", "label": "relu (nn.ReLU)", "is_compound": false, "parent": "features.1", "type": "primitive", "layer_index": 2, "variance": 0.0, "neurons": [0.0, 0.15, 0.0, 0.71]},
+        {"id": "features.1.conv2", "label": "conv2 (nn.Conv2d)", "is_compound": false, "parent": "features.1", "type": "primitive", "layer_index": 3, "variance": 4510.2, "neurons": [99.0, -84.0, 104.0, 999.0]},
+        {"id": "features.1.add_op", "label": "Add Operator (+)", "is_compound": false, "parent": "features.1", "type": "primitive_functional", "layer_index": 4, "variance": 0.0, "neurons": [1.2, 0.5, 0.8, 1.1]},
+        {"id": "classifier", "label": "classifier (nn.Sequential)", "is_compound": true, "parent": "root", "type": "container"},
+        {"id": "classifier.0", "label": "classifier.0 (nn.Flatten)", "is_compound": false, "parent": "classifier", "type": "primitive", "layer_index": 5, "variance": 0.0, "neurons": [0.5, 0.5, 0.5, 0.5]},
+        {"id": "classifier.1", "label": "classifier.1 (nn.Linear)", "is_compound": false, "parent": "classifier", "type": "primitive", "layer_index": 6, "variance": null, "neurons": [NaN, NaN, NaN, NaN]}
+      ],
+      "edges": [
+        {"id": "e1", "source": "features.0", "target": "features.1.conv1", "is_failure_path": false, "edge_style": "straight"},
+        {"id": "e2", "source": "features.1.conv1", "target": "features.1.relu", "is_failure_path": false, "edge_style": "straight"},
+        {"id": "e3", "source": "features.1.relu", "target": "features.1.conv2", "is_failure_path": false, "edge_style": "straight"},
+        {"id": "e4", "source": "features.1.conv2", "target": "features.1.add_op", "is_failure_path": true, "edge_style": "straight"},
+        {"id": "e5_residual_skip", "source": "features.0", "target": "features.1.add_op", "is_failure_path": false, "edge_style": "bezier"},
+        {"id": "e6", "source": "features.1.add_op", "target": "classifier.0", "is_failure_path": true, "edge_style": "straight"},
+        {"id": "e7", "source": "classifier.0", "target": "classifier.1", "is_failure_path": true, "edge_style": "straight"}
+      ]
+    };
+
+    const nodeMap = new Map(modelSchema.nodes.map((node) => [node.id, node]));
+    const expanded = new Set(["root"]);
+    const selectedNeurons = [];
+    let activePathEdges = new Set();
+    let dashOffset = 0;
+    let dashTimer = null;
+    let tickerTimer = null;
+    let lastTap = { id: null, time: 0 };
+    let firstLayout = true;
+
+    function isAnomaly(node) {
+      if (node.type === "container") {
+        return false;
+      }
+      const hasBadVariance = node.variance === null || Math.abs(Number(node.variance || 0)) > 100;
+      const hasBadNeuron = (node.neurons || []).some((value) => Number.isNaN(value) || Math.abs(Number(value)) > 100);
+      return hasBadVariance || hasBadNeuron;
+    }
+
+    function parentOf(nodeId) {
+      return nodeMap.get(nodeId)?.parent || null;
+    }
+
+    function ancestorChain(nodeId) {
+      const chain = [];
+      let current = nodeId;
+      while (current) {
+        chain.push(current);
+        current = parentOf(current);
+      }
+      return chain;
+    }
+
+    function isNodeVisible(nodeId) {
+      const node = nodeMap.get(nodeId);
+      if (!node) {
+        return false;
+      }
+      if (node.id === "root") {
+        return true;
+      }
+      if (node.parent === "root") {
+        return true;
+      }
+      let currentParent = node.parent;
+      while (currentParent && currentParent !== "root") {
+        if (!expanded.has(currentParent)) {
+          return false;
+        }
+        currentParent = parentOf(currentParent);
+      }
+      return true;
+    }
+
+    function visibleAncestor(nodeId) {
+      let current = nodeId;
+      while (current) {
+        if (isNodeVisible(current)) {
+          return current;
+        }
+        current = parentOf(current);
+      }
+      return "root";
+    }
+
+    function buildElements() {
+      const nodes = modelSchema.nodes.map((node) => ({
+        data: {
+          id: node.id,
+          label: node.label,
+          parent: node.parent || undefined,
+          type: node.type,
+          is_compound: node.is_compound,
+          layer_index: node.layer_index,
+          variance: node.variance,
+          anomaly: isAnomaly(node),
+          neurons: node.neurons || []
+        },
+        classes: [
+          node.is_compound ? "compound" : "leaf",
+          node.type,
+          isAnomaly(node) ? "anomaly flash-on" : ""
+        ].filter(Boolean).join(" ")
+      }));
+
+      const edges = modelSchema.edges.map((edge) => ({
+        data: {
+          id: edge.id,
+          source: edge.source,
+          target: edge.target,
+          is_failure_path: edge.is_failure_path,
+          edge_style: edge.edge_style,
+          label: edge.is_failure_path ? "failure" : ""
+        },
+        classes: [
+          "raw-edge",
+          edge.edge_style,
+          edge.is_failure_path ? "failure-edge" : ""
+        ].filter(Boolean).join(" ")
+      }));
+
+      return [...nodes, ...edges];
+    }
+
+    const cy = cytoscape({
+      container: document.getElementById("cy"),
+      elements: buildElements(),
+      minZoom: 0.15,
+      maxZoom: 3.5,
+      wheelSensitivity: 0.18,
+      boxSelectionEnabled: false,
+      autoungrabify: false,
+      style: [
+        {
+          selector: "node",
+          style: {
+            "font-family": "Inter, system-ui, sans-serif",
+            "font-size": 10,
+            "text-wrap": "wrap",
+            "text-max-width": 130,
+            "overlay-opacity": 0,
+            "transition-property": "background-color, border-color, border-width, line-color, target-arrow-color, width, height",
+            "transition-duration": "220ms"
+          }
+        },
+        {
+          selector: "node[type = \"container\"]",
+          style: {
+            "shape": "round-rectangle",
+            "background-color": "#94a3b8",
+            "background-opacity": 0.08,
+            "border-color": "#94a3b8",
+            "border-width": 2,
+            "border-style": "dashed",
+            "label": "data(label)",
+            "color": "#dbeafe",
+            "text-valign": "top",
+            "text-halign": "left",
+            "text-margin-x": 8,
+            "text-margin-y": 8,
+            "padding": 24,
+            "min-width": 150,
+            "min-height": 96
+          }
+        },
+        {
+          selector: "node[type = \"primitive\"]",
+          style: {
+            "shape": "ellipse",
+            "width": 56,
+            "height": 56,
+            "background-color": "#2563eb",
+            "border-color": "#93c5fd",
+            "border-width": 2,
+            "label": "data(label)",
+            "color": "#e0f2fe",
+            "text-valign": "bottom",
+            "text-halign": "center",
+            "text-margin-y": 8
+          }
+        },
+        {
+          selector: "node[type = \"primitive_functional\"]",
+          style: {
+            "shape": "hexagon",
+            "width": 66,
+            "height": 58,
+            "background-color": "#7c3aed",
+            "border-color": "#c4b5fd",
+            "border-width": 2,
+            "label": "data(label)",
+            "color": "#f5f3ff",
+            "text-valign": "bottom",
+            "text-halign": "center",
+            "text-margin-y": 8
+          }
+        },
+        {
+          selector: "node.anomaly",
+          style: {
+            "background-color": "#dc2626",
+            "border-color": "#fecaca",
+            "border-width": 4,
+            "color": "#fff1f2"
+          }
+        },
+        {
+          selector: "node.anomaly.flash-on",
+          style: {
+            "background-color": "#ff1744",
+            "border-color": "#ffffff",
+            "width": 66,
+            "height": 66
+          }
+        },
+        {
+          selector: "node:selected",
+          style: {
+            "border-color": "#facc15",
+            "border-width": 5
+          }
+        },
+        {
+          selector: "edge",
+          style: {
+            "width": 2,
+            "line-color": "#64748b",
+            "target-arrow-color": "#64748b",
+            "target-arrow-shape": "triangle",
+            "arrow-scale": 0.7,
+            "curve-style": "straight",
+            "opacity": 0.82,
+            "font-size": 9,
+            "label": "data(label)",
+            "color": "#fecaca",
+            "text-background-color": "#0f172a",
+            "text-background-opacity": 0.8,
+            "text-background-padding": 3
+          }
+        },
+        {
+          selector: "edge.bezier",
+          style: {
+            "curve-style": "unbundled-bezier",
+            "control-point-distances": 90,
+            "control-point-weights": 0.5
+          }
+        },
+        {
+          selector: "edge.failure-edge",
+          style: {
+            "width": 6,
+            "line-color": "#dc143c",
+            "target-arrow-color": "#dc143c",
+            "opacity": 1,
+            "z-index": 20
+          }
+        },
+        {
+          selector: "edge.summary-edge",
+          style: {
+            "width": "mapData(count, 1, 4, 3, 8)",
+            "line-color": "#38bdf8",
+            "target-arrow-color": "#38bdf8",
+            "line-style": "dashed",
+            "curve-style": "bezier",
+            "opacity": 0.75,
+            "label": "data(label)"
+          }
+        },
+        {
+          selector: "edge.summary-failure",
+          style: {
+            "line-color": "#dc143c",
+            "target-arrow-color": "#dc143c",
+            "width": "mapData(count, 1, 4, 5, 10)",
+            "opacity": 1
+          }
+        },
+        {
+          selector: "edge.interrogation-path",
+          style: {
+            "width": 8,
+            "line-color": "#facc15",
+            "target-arrow-color": "#facc15",
+            "line-style": "dashed",
+            "line-dash-pattern": [10, 7],
+            "opacity": 1,
+            "z-index": 50
+          }
+        }
+      ]
+    });
+
+    function removeSummaryEdges() {
+      cy.edges(".summary-edge").remove();
+    }
+
+    function refreshVisibility(runAnimatedLayout = true) {
+      removeSummaryEdges();
+
+      cy.nodes().forEach((node) => {
+        if (isNodeVisible(node.id())) {
+          node.show();
+        } else {
+          node.hide();
+        }
+      });
+
+      cy.edges(".raw-edge").forEach((edge) => {
+        const sourceVisible = isNodeVisible(edge.data("source"));
+        const targetVisible = isNodeVisible(edge.data("target"));
+        if (sourceVisible && targetVisible) {
+          edge.show();
+        } else {
+          edge.hide();
+        }
+      });
+
+      const summary = new Map();
+      for (const edge of modelSchema.edges) {
+        const sourceVisible = isNodeVisible(edge.source);
+        const targetVisible = isNodeVisible(edge.target);
+        if (sourceVisible && targetVisible) {
+          continue;
+        }
+        const source = visibleAncestor(edge.source);
+        const target = visibleAncestor(edge.target);
+        if (!source || !target || source === target) {
+          continue;
+        }
+        const key = `${source}->${target}`;
+        if (!summary.has(key)) {
+          summary.set(key, { source, target, count: 0, failure: false, styles: new Set() });
+        }
+        const item = summary.get(key);
+        item.count += 1;
+        item.failure = item.failure || edge.is_failure_path;
+        item.styles.add(edge.edge_style);
+      }
+
+      for (const [key, item] of summary.entries()) {
+        cy.add({
+          group: "edges",
+          data: {
+            id: `summary:${key}`,
+            source: item.source,
+            target: item.target,
+            count: item.count,
+            label: item.failure ? `failure x${item.count}` : `x${item.count}`
+          },
+          classes: ["summary-edge", item.failure ? "summary-failure" : "", item.styles.has("bezier") ? "bezier" : ""].filter(Boolean).join(" ")
+        });
+      }
+
+      runLayout(runAnimatedLayout);
+      updateStats();
+      restoreInterrogationStyles();
+    }
+
+    function runLayout(animate = true) {
+      const visible = cy.elements(":visible");
+      const layout = visible.layout({
+        name: "breadthfirst",
+        directed: true,
+        padding: 80,
+        spacingFactor: 1.35,
+        avoidOverlap: true,
+        animate,
+        animationDuration: animate ? 430 : 0,
+        fit: firstLayout
+      });
+      layout.run();
+      if (firstLayout) {
+        firstLayout = false;
+      }
+    }
+
+    function toggleCompound(nodeId) {
+      if (!nodeMap.get(nodeId)?.is_compound || nodeId === "root") {
+        return;
+      }
+      if (expanded.has(nodeId)) {
+        collapseRecursively(nodeId);
+      } else {
+        expanded.add(nodeId);
+      }
+      refreshVisibility(true);
+      renderSelectionPanel(cy.getElementById(nodeId));
+    }
+
+    function collapseRecursively(nodeId) {
+      expanded.delete(nodeId);
+      for (const node of modelSchema.nodes) {
+        if (ancestorChain(node.id).includes(nodeId)) {
+          expanded.delete(node.id);
+        }
+      }
+    }
+
+    function updateStats() {
+      document.getElementById("expandedCount").textContent = [...expanded].filter((id) => id !== "root").length;
+      document.getElementById("failureCount").textContent = modelSchema.edges.filter((edge) => edge.is_failure_path).length;
+    }
+
+    function varianceLabel(value) {
+      if (value === null) {
+        return "null";
+      }
+      if (Number.isNaN(value)) {
+        return "NaN";
+      }
+      return Number(value).toFixed(4);
+    }
+
+    function heatColor(value) {
+      if (Number.isNaN(value)) {
+        return "background: linear-gradient(135deg, #7f1d1d, #ff1744); color: white;";
+      }
+      const clamped = Math.max(-1, Math.min(1, Number(value) / 4));
+      if (Math.abs(Number(value)) > 100) {
+        return "background: linear-gradient(135deg, #991b1b, #facc15); color: white;";
+      }
+      if (clamped >= 0) {
+        const alpha = 0.18 + Math.abs(clamped) * 0.72;
+        return `background: rgba(37, 99, 235, ${alpha}); color: white;`;
+      }
+      const alpha = 0.18 + Math.abs(clamped) * 0.72;
+      return `background: rgba(14, 165, 233, ${alpha}); color: white;`;
+    }
+
+    function renderSelectionPanel(ele) {
+      const panel = document.getElementById("selectionPanel");
+      if (!ele || ele.empty()) {
+        panel.innerHTML = defaultPanel();
+        return;
+      }
+
+      const data = ele.data();
+      const schemaNode = nodeMap.get(data.id);
+      if (!schemaNode) {
+        panel.innerHTML = defaultPanel();
+        return;
+      }
+
+      if (schemaNode.is_compound) {
+        const isExpanded = expanded.has(schemaNode.id);
+        panel.innerHTML = `
+          <div class="rounded-lg border border-white/10 bg-slate-900 p-4">
+            <div class="text-xs uppercase tracking-wide text-slate-500">Compound Module</div>
+            <div class="mt-1 text-lg font-semibold text-white">${schemaNode.label}</div>
+            <div class="mt-3 text-sm leading-6 text-slate-400">Onion state: <span class="font-semibold text-sky-300">${isExpanded ? "expanded" : "collapsed"}</span></div>
+            <button id="toggleCompound" class="mt-4 w-full rounded-md bg-sky-600 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-500">${isExpanded ? "Collapse" : "Expand"}</button>
+          </div>
+        `;
+        document.getElementById("toggleCompound").addEventListener("click", () => toggleCompound(schemaNode.id));
+        return;
+      }
+
+      const neurons = schemaNode.neurons || [];
+      const heatmap = neurons.map((value, index) => {
+        const selected = selectedNeurons.some((item) => item.nodeId === schemaNode.id && item.index === index);
+        return `
+          <button class="heat-cell ${selected ? "selected" : ""} rounded-lg p-3 text-center text-xs font-semibold" style="${heatColor(value)}" data-node="${schemaNode.id}" data-index="${index}">
+            <div>n${index}</div>
+            <div class="mt-1">${Number.isNaN(value) ? "NaN" : Number(value).toFixed(3)}</div>
+          </button>
+        `;
+      }).join("");
+
+      panel.innerHTML = `
+        <div class="rounded-lg border border-white/10 bg-slate-900 p-4">
+          <div class="text-xs uppercase tracking-wide text-slate-500">Primitive Node</div>
+          <div class="mt-1 text-lg font-semibold text-white">${schemaNode.label}</div>
+          <div class="mt-3 grid grid-cols-2 gap-3 text-sm">
+            <div class="rounded-md bg-slate-950 p-3"><div class="text-slate-500">Layer</div><div class="font-semibold text-white">${schemaNode.layer_index}</div></div>
+            <div class="rounded-md bg-slate-950 p-3"><div class="text-slate-500">Variance</div><div class="font-semibold ${isAnomaly(schemaNode) ? "text-rose-300" : "text-white"}">${varianceLabel(schemaNode.variance)}</div></div>
+          </div>
+          <div class="mt-4 text-sm font-semibold text-slate-200">Neuron / Weight Telemetry</div>
+          <div class="mt-3 grid grid-cols-2 gap-2">${heatmap}</div>
+          <div class="mt-4 text-xs leading-5 text-slate-400">Select two heatmap cells from different visible primitive nodes to animate path interrogation.</div>
+        </div>
+      `;
+
+      panel.querySelectorAll(".heat-cell").forEach((button) => {
+        button.addEventListener("click", () => {
+          const index = Number(button.dataset.index);
+          selectNeuron(schemaNode.id, index, neurons[index]);
+          renderSelectionPanel(ele);
+        });
+      });
+    }
+
+    function defaultPanel() {
+      return `
+        <div class="rounded-lg border border-white/10 bg-slate-900 p-4">
+          <div class="font-semibold text-white">Interaction</div>
+          <ul class="mt-3 list-disc space-y-2 pl-5 leading-6 text-slate-400">
+            <li>Double-click a compound module to expand or collapse its onion layer.</li>
+            <li>Select a primitive node to inspect neuron telemetry.</li>
+            <li>Click two neuron cells from different active nodes to animate the data-flow path.</li>
+          </ul>
+        </div>
+      `;
+    }
+
+    function selectNeuron(nodeId, index, value) {
+      const existing = selectedNeurons.findIndex((item) => item.nodeId === nodeId && item.index === index);
+      if (existing >= 0) {
+        selectedNeurons.splice(existing, 1);
+        clearInterrogation(false);
+        return;
+      }
+      if (selectedNeurons.length === 2) {
+        selectedNeurons.splice(0, selectedNeurons.length);
+      }
+      if (selectedNeurons.length === 1 && selectedNeurons[0].nodeId === nodeId) {
+        setTicker(`<span class="text-amber-300">Pick the second neuron from a different active node.</span>`);
+        return;
+      }
+      selectedNeurons.push({ nodeId, index, value });
+      if (selectedNeurons.length === 2) {
+        activateInterrogation(selectedNeurons[0], selectedNeurons[1]);
+      } else {
+        setTicker(`<span class="text-sky-300">Selected ${nodeId}[${index}] = ${formatValue(value)}. Choose one neuron from another node.</span>`);
+      }
+    }
+
+    function formatValue(value) {
+      return Number.isNaN(value) ? "NaN" : Number(value).toFixed(4);
+    }
+
+    function graphAdjacency() {
+      const adjacency = new Map();
+      for (const edge of modelSchema.edges) {
+        if (!adjacency.has(edge.source)) {
+          adjacency.set(edge.source, []);
+        }
+        adjacency.get(edge.source).push(edge.target);
+      }
+      return adjacency;
+    }
+
+    function findDirectedPath(source, target) {
+      const adjacency = graphAdjacency();
+      const queue = [[source]];
+      const seen = new Set([source]);
+      while (queue.length) {
+        const path = queue.shift();
+        const current = path[path.length - 1];
+        if (current === target) {
+          return path;
+        }
+        for (const neighbor of adjacency.get(current) || []) {
+          if (!seen.has(neighbor)) {
+            seen.add(neighbor);
+            queue.push([...path, neighbor]);
+          }
+        }
+      }
+      return null;
+    }
+
+    function edgeIdFor(source, target) {
+      return modelSchema.edges.find((edge) => edge.source === source && edge.target === target)?.id;
+    }
+
+    function activateInterrogation(a, b) {
+      clearInterrogation(false);
+      let path = findDirectedPath(a.nodeId, b.nodeId);
+      let source = a;
+      let target = b;
+      if (!path) {
+        path = findDirectedPath(b.nodeId, a.nodeId);
+        source = b;
+        target = a;
+      }
+      if (!path) {
+        setTicker(`<span class="text-rose-300">No directed data-flow path exists between ${a.nodeId} and ${b.nodeId}.</span>`);
+        return;
+      }
+
+      activePathEdges = new Set();
+      for (let index = 0; index < path.length - 1; index += 1) {
+        const edgeId = edgeIdFor(path[index], path[index + 1]);
+        if (edgeId) {
+          activePathEdges.add(edgeId);
+        }
+      }
+      restoreInterrogationStyles();
+      startDashAnimation();
+      startTelemetryTicker(path, source, target);
+    }
+
+    function restoreInterrogationStyles() {
+      cy.edges().removeClass("interrogation-path");
+      for (const edgeId of activePathEdges) {
+        const edge = cy.getElementById(edgeId);
+        if (!edge.empty()) {
+          edge.addClass("interrogation-path");
+        }
+      }
+    }
+
+    function startDashAnimation() {
+      if (dashTimer) {
+        clearInterval(dashTimer);
+      }
+      dashTimer = setInterval(() => {
+        dashOffset = (dashOffset + 2) % 48;
+        cy.edges(".interrogation-path").style("line-dash-offset", dashOffset);
+      }, 45);
+    }
+
+    function startTelemetryTicker(path, source, target) {
+      if (tickerTimer) {
+        clearInterval(tickerTimer);
+      }
+      let tick = 0;
+      tickerTimer = setInterval(() => {
+        const phase = (tick % 100) / 100;
+        const interpolated = Number.isNaN(source.value) || Number.isNaN(target.value)
+          ? "NaN"
+          : ((1 - phase) * Number(source.value) + phase * Number(target.value)).toFixed(4);
+        const currentEdge = path[Math.min(path.length - 2, Math.floor(phase * Math.max(1, path.length - 1)))] || path[0];
+        setTicker(`
+          <span class="telemetry-marquee inline-block">
+            ${source.nodeId}[${source.index}] = ${formatValue(source.value)}
+            &nbsp; -> &nbsp; ${target.nodeId}[${target.index}] = ${formatValue(target.value)}
+            &nbsp; | &nbsp; live coefficient ${interpolated}
+            &nbsp; | &nbsp; vector segment ${currentEdge}
+            &nbsp; | &nbsp; path ${path.join(" -> ")}
+          </span>
+        `);
+        tick += 3;
+      }, 220);
+    }
+
+    function setTicker(html) {
+      document.getElementById("ticker").innerHTML = html;
+    }
+
+    function clearInterrogation(clearSelection = true) {
+      activePathEdges = new Set();
+      cy.edges().removeClass("interrogation-path").style("line-dash-offset", 0);
+      if (dashTimer) {
+        clearInterval(dashTimer);
+        dashTimer = null;
+      }
+      if (tickerTimer) {
+        clearInterval(tickerTimer);
+        tickerTimer = null;
+      }
+      if (clearSelection) {
+        selectedNeurons.splice(0, selectedNeurons.length);
+        renderSelectionPanel(cy.$("node:selected"));
+      }
+      setTicker(`<span class="text-slate-400">Select two neurons from different active primitive nodes to animate a data-flow path.</span>`);
+    }
+
+    cy.on("tap", "node", (event) => {
+      const node = event.target;
+      renderSelectionPanel(node);
+      const schemaNode = nodeMap.get(node.id());
+      if (schemaNode?.is_compound) {
+        const now = Date.now();
+        if (lastTap.id === node.id() && now - lastTap.time < 360) {
+          toggleCompound(node.id());
+          lastTap = { id: null, time: 0 };
+        } else {
+          lastTap = { id: node.id(), time: now };
+        }
+      }
+    });
+
+    cy.on("tap", (event) => {
+      if (event.target === cy) {
+        cy.nodes().unselect();
+        renderSelectionPanel(null);
+      }
+    });
+
+    document.getElementById("zoomIn").addEventListener("click", () => {
+      cy.animate({ zoom: cy.zoom() * 1.18, center: { eles: cy.elements(":visible") } }, { duration: 180 });
+    });
+
+    document.getElementById("zoomOut").addEventListener("click", () => {
+      cy.animate({ zoom: cy.zoom() / 1.18, center: { eles: cy.elements(":visible") } }, { duration: 180 });
+    });
+
+    document.getElementById("fit").addEventListener("click", () => {
+      cy.animate({ fit: { eles: cy.elements(":visible"), padding: 70 } }, { duration: 250 });
+    });
+
+    document.getElementById("resetPath").addEventListener("click", () => clearInterrogation(true));
+
+    setInterval(() => {
+      cy.nodes(".anomaly").toggleClass("flash-on");
+    }, 620);
+
+    refreshVisibility(false);
+  </script>
+</body>
+</html>
