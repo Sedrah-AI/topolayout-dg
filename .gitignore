@@ -39,6 +39,3 @@ case_*/graph_data.json
 case_*/graph_data_*.json
 case_2_transformer/transformer_layer.onnx
 *.onnx
-
-# Keep the lightweight sample payload used by the Case 1 demo page.
-!case_1_citation/graph_data.json
