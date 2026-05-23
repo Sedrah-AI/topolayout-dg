@@ -1,10 +1,12 @@
 # TopoLayout-DG Case Studies
 
-This repository contains two reproducible TopoLayout-DG case studies with
+This repository contains three reproducible TopoLayout-DG case studies with
 hierarchical edge bundling:
 
 - Case 1: macro-topology validation on SNAP `cit-HepPh`.
 - Case 2: PyTorch -> ONNX -> ToF2DG profiling of a live Transformer layer.
+- Case 3: LayMan-style PyTorch image-classifier hierarchy plus failure
+  propagation tracing down to sampled activation-neuron and weight elements.
 
 The backend exports `graph_data.json` with two primary structures:
 
@@ -31,14 +33,17 @@ conda activate topolayout-dg
 ./run_case_studies.sh
 ```
 
-The script regenerates both case payloads and serves:
+The script regenerates the available case payloads and serves:
 
 ```text
 Case 1: http://127.0.0.1:8001/index.html
 Case 2: http://127.0.0.1:8002/index.html
+Case 3: http://127.0.0.1:8003/index.html
 ```
 
-It keeps both servers alive until `Ctrl-C`.
+It keeps the local servers alive until `Ctrl-C`.
+If `cit-HepPh.txt` is not present, Case 1 serves the committed sample payload
+and still runs Cases 2 and 3.
 
 ## Sample Payload
 
@@ -68,4 +73,8 @@ topolayout-dg/
     +-- index.html
     +-- graph_data.json
     +-- transformer_layer.onnx
++-- case_3_image_classifier/
+    +-- pipeline.py
+    +-- index.html
+    +-- graph_data.json
 ```

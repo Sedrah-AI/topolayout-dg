@@ -21,21 +21,27 @@ if [[ -f "$PID_FILE" ]]; then
   cleanup_servers
 fi
 
-if [[ ! -f "$ROOT_DIR/cit-HepPh.txt" ]]; then
-  echo "Missing $ROOT_DIR/cit-HepPh.txt"
-  echo "Place the SNAP cit-HepPh edge list at the repository root before running Case 1."
-  exit 1
+CASE_1_PATH="/index.html?data=sample_graph_data.json"
+if [[ -f "$ROOT_DIR/cit-HepPh.txt" ]]; then
+  echo "Generating Case 1: cit-HepPh macro-topology validation"
+  "$PYTHON_BIN" "$ROOT_DIR/case_1_citation/pipeline.py" \
+    --input "$ROOT_DIR/cit-HepPh.txt" \
+    --output "$ROOT_DIR/case_1_citation/graph_data.json"
+  CASE_1_PATH="/index.html"
+else
+  echo "Skipping full Case 1 generation: cit-HepPh.txt is not present."
+  echo "Serving the committed 100-node sample payload for Case 1."
 fi
-
-echo "Generating Case 1: cit-HepPh macro-topology validation"
-"$PYTHON_BIN" "$ROOT_DIR/case_1_citation/pipeline.py" \
-  --input "$ROOT_DIR/cit-HepPh.txt" \
-  --output "$ROOT_DIR/case_1_citation/graph_data.json"
 
 echo "Generating Case 2: live Transformer layer execution graph"
 "$PYTHON_BIN" "$ROOT_DIR/case_2_transformer/pipeline.py" \
   --output "$ROOT_DIR/case_2_transformer/graph_data.json" \
   --onnx "$ROOT_DIR/case_2_transformer/transformer_layer.onnx"
+
+echo "Generating Case 3: LayMan image classifier failure graph"
+"$PYTHON_BIN" "$ROOT_DIR/case_3_image_classifier/pipeline.py" \
+  --output "$ROOT_DIR/case_3_image_classifier/graph_data.json" \
+  --html "$ROOT_DIR/case_3_image_classifier/index.html"
 
 start_server() {
   local port="$1"
@@ -53,17 +59,21 @@ start_server() {
 
 start_server 8001 "$ROOT_DIR/case_1_citation"
 start_server 8002 "$ROOT_DIR/case_2_transformer"
+start_server 8003 "$ROOT_DIR/case_3_image_classifier"
 
-CASE_1_URL="http://127.0.0.1:8001/index.html"
+CASE_1_URL="http://127.0.0.1:8001${CASE_1_PATH}"
 CASE_2_URL="http://127.0.0.1:8002/index.html"
+CASE_3_URL="http://127.0.0.1:8003/index.html"
 
 echo "Case 1: $CASE_1_URL"
 echo "Case 2: $CASE_2_URL"
+echo "Case 3: $CASE_3_URL"
 echo "Server PIDs written to $PID_FILE"
 
 if [[ "${NO_OPEN:-0}" != "1" ]] && command -v open >/dev/null 2>&1; then
   open "$CASE_1_URL"
   open "$CASE_2_URL"
+  open "$CASE_3_URL"
 fi
 
 trap cleanup_servers EXIT INT TERM

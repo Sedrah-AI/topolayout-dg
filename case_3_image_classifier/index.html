@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LayMan Image Classifier</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { width: 100%; height: 100%; overflow: hidden; background: #111317; color: #eef2f7; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+        #stage { display: block; width: 100vw; height: 100vh; background: #111317; }
+        #panel { position: fixed; top: 16px; left: 16px; width: min(380px, calc(100vw - 32px)); padding: 14px; border: 1px solid rgba(255,255,255,0.16); border-radius: 8px; background: rgba(18,21,27,0.9); box-shadow: 0 18px 46px rgba(0,0,0,0.38); backdrop-filter: blur(14px); }
+        #title { margin-bottom: 10px; font-size: 13px; font-weight: 700; color: #fff; }
+        .row { display: grid; grid-template-columns: 1fr auto; gap: 12px; padding: 6px 0; border-top: 1px solid rgba(255,255,255,0.08); font-size: 12px; line-height: 1.25; }
+        .label { color: #aeb7c3; }
+        .value { color: #f8fafc; font-variant-numeric: tabular-nums; text-align: right; }
+        #details { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.08); color: #d7dee8; font-size: 12px; line-height: 1.45; max-height: 34vh; overflow: auto; }
+        #loading { position: fixed; inset: 0; display: grid; place-items: center; background: #111317; color: #dbe3ee; font-size: 13px; z-index: 10; }
+        #loading[hidden] { display: none; }
+    </style>
+</head>
+<body>
+    <canvas id="stage"></canvas>
+    <div id="loading">Loading graph_data.json</div>
+    <aside id="panel">
+        <div id="title">LayMan Image Classifier</div>
+        <div class="row"><span class="label">Loss</span><span class="value" id="loss">0</span></div>
+        <div class="row"><span class="label">Prediction</span><span class="value" id="prediction">0</span></div>
+        <div class="row"><span class="label">Tree Nodes</span><span class="value" id="tree-nodes">0</span></div>
+        <div class="row"><span class="label">Dataflow Edges</span><span class="value" id="dataflow-edges">0</span></div>
+        <div class="row"><span class="label">Failure Paths</span><span class="value" id="failure-paths">0</span></div>
+        <div id="details">Click any module, op, neuron, or weight node.</div>
+    </aside>
+    <script src="https://cdn.jsdelivr.net/npm/pixi.js@7.4.2/dist/pixi.min.js"></script>
+    <script>
+        const app = new PIXI.Application({ view: document.getElementById("stage"), resizeTo: window, backgroundColor: 0x111317, antialias: true, autoDensity: true, resolution: window.devicePixelRatio || 1 });
+        const world = new PIXI.Container();
+        const edgeLayer = new PIXI.Container();
+        const boxLayer = new PIXI.Container();
+        const nodeLayer = new PIXI.Container();
+        world.addChild(edgeLayer, boxLayer, nodeLayer);
+        app.stage.addChild(world);
+        app.stage.interactive = true;
+        app.stage.hitArea = app.screen;
+
+        const nodeById = new Map();
+        const visualNodes = [];
+        let graphData = null;
+        let camera = { scale: 1, x: 0, y: 0 };
+
+        const colors = {
+            module: 0x64748b, op: 0x3b82f6, param: 0xf59e0b,
+            weight: 0xef4444, neuron: 0x22c55e
+        };
+
+        function indexTree(node) {
+            nodeById.set(node.id, node);
+            visualNodes.push(node);
+            for (const child of node.children || []) indexTree(child);
+        }
+
+        function setCameraToRoot(root) {
+            const padding = 60;
+            camera.scale = Math.min((app.screen.width - padding * 2) / root.width, (app.screen.height - padding * 2) / root.height);
+            camera.scale = Math.max(0.05, camera.scale);
+            camera.x = app.screen.width / 2 - (root.x + root.width / 2) * camera.scale;
+            camera.y = app.screen.height / 2 - (root.y + root.height / 2) * camera.scale;
+            world.scale.set(camera.scale);
+            world.position.set(camera.x, camera.y);
+        }
+
+        function drawTree(node, depth = 0) {
+            const color = colors[node.kind] || 0x94a3b8;
+            if (node.kind === "module" || node.kind === "op" || node.kind === "param") {
+                const g = new PIXI.Graphics();
+                g.lineStyle(Math.max(1 / camera.scale, 1.2), color, node.kind === "module" ? 0.55 : 0.85);
+                g.beginFill(color, node.kind === "module" ? 0.035 : 0.08);
+                g.drawRect(node.x, node.y, node.width, node.height);
+                g.endFill();
+                g.interactive = true;
+                g.cursor = "pointer";
+                g.on("pointertap", (event) => { event.stopPropagation(); showDetails(node); });
+                boxLayer.addChild(g);
+                if (node.width > 70 && node.height > 28) {
+                    const label = new PIXI.Text(node.label, { fontFamily: "Inter, Arial", fontSize: 10, fill: 0xe5edf8 });
+                    label.x = node.x + 6;
+                    label.y = node.y + 5;
+                    label.eventMode = "none";
+                    boxLayer.addChild(label);
+                }
+            } else {
+                const g = new PIXI.Graphics();
+                const radius = node.kind === "weight" ? 3.2 : 3.8;
+                g.beginFill(color, 0.95);
+                g.drawCircle(node.cx, node.cy, radius / Math.max(camera.scale, 0.1));
+                g.endFill();
+                g.interactive = true;
+                g.cursor = "pointer";
+                g.on("pointertap", (event) => { event.stopPropagation(); showDetails(node); });
+                nodeLayer.addChild(g);
+            }
+            for (const child of node.children || []) drawTree(child, depth + 1);
+        }
+
+        function failureEdgeSet() {
+            const result = new Set();
+            for (const path of graphData.failure_paths) {
+                for (const edge of path.edges) result.add(edge[0] + "->" + edge[1]);
+            }
+            return result;
+        }
+
+        function drawEdges() {
+            const hot = failureEdgeSet();
+            const g = new PIXI.Graphics();
+            for (const edge of graphData.dataflow_edges) {
+                const source = nodeById.get(edge.source);
+                const target = nodeById.get(edge.target);
+                if (!source || !target) continue;
+                const key = edge.source + "->" + edge.target;
+                const highlighted = hot.has(key);
+                g.lineStyle(highlighted ? 2.8 / camera.scale : 1.0 / camera.scale, highlighted ? 0xff4d4d : 0x5eead4, highlighted ? 0.95 : 0.22);
+                const dx = target.cx - source.cx;
+                const c1x = source.cx + dx * 0.45;
+                const c2x = source.cx + dx * 0.55;
+                g.moveTo(source.cx, source.cy);
+                g.bezierCurveTo(c1x, source.cy, c2x, target.cy, target.cx, target.cy);
+            }
+            edgeLayer.addChild(g);
+        }
+
+        function showDetails(node) {
+            const escaped = (value) => String(value).replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[char]));
+            const details = Object.entries(node.details || {}).map(([key, value]) => `<div><span class="label">${escaped(key)}</span>: ${escaped(JSON.stringify(value))}</div>`).join("");
+            document.getElementById("details").innerHTML = `<strong>${escaped(node.label)}</strong><br>${escaped(node.kind)} / ${escaped(node.type)}<br>${details}`;
+        }
+
+        async function boot() {
+            const response = await fetch("graph_data.json", { cache: "no-store" });
+            if (!response.ok) throw new Error(`graph_data.json returned HTTP ${response.status}`);
+            graphData = await response.json();
+            indexTree(graphData.tree);
+            setCameraToRoot(graphData.tree);
+            drawEdges();
+            drawTree(graphData.tree);
+            document.getElementById("loss").textContent = graphData.model.loss.toFixed(5);
+            document.getElementById("prediction").textContent = `${graphData.model.predicted_class} / target ${graphData.model.target_class}`;
+            document.getElementById("tree-nodes").textContent = graphData.stats.tree_nodes;
+            document.getElementById("dataflow-edges").textContent = graphData.stats.dataflow_edges;
+            document.getElementById("failure-paths").textContent = graphData.stats.failure_paths;
+            document.getElementById("loading").hidden = true;
+        }
+
+        boot().catch((error) => {
+            document.getElementById("loading").textContent = error.message;
+            console.error(error);
+        });
+    </script>
+</body>
+</html>
